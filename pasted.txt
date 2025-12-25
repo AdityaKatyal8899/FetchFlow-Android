@@ -1,0 +1,637 @@
+import yt_dlp
+import ffmpeg
+import os, sys
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import font as tkfont
+from tkinter import PhotoImage
+from tkinter import scrolledtext
+from tkinter import ttk
+import urllib.request
+import io
+
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except Exception:
+    PIL_AVAILABLE = False
+
+def resource_path(relative):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative)
+    return os.path.join(os.path.abspath("."), relative)
+
+FFMPEG_LOCATION = resource_path("ffmpeg/ffmpeg.exe")
+
+
+def readable_size(size_bytes):
+    if not size_bytes:
+        return "Unknown"
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.2f} PB"
+
+
+def is_reasonable(filesize, height):
+    if not filesize or not height:
+        return False
+
+    expected_min = {
+        144: 0.5, 240: 1, 360: 2, 480: 3,
+        720: 5, 1080: 8, 1440: 12, 2160: 20
+    }
+
+    resolution_keys = sorted(expected_min.keys())
+    for res in reversed(resolution_keys):
+        if height >= res:
+            return filesize >= expected_min[res] * 1024 * 1024
+    return filesize >= 2 * 1024 * 1024
+
+
+def sort_and_print_formats(formats):
+    allowed_video_audio = []
+    blocked_video_audio = []
+    video_only_all = {}
+    audio_only_all = []
+
+    for f in formats:
+        fmt_id = f.get("format_id")
+        vcodec = f.get("vcodec")
+        acodec = f.get("acodec")
+        width = f.get("width") or 0
+        height = f.get("height") or 0
+        filesize = f.get("filesize") or f.get("filesize_approx")
+        ext = f.get("ext", "unknown")
+        format_note = f.get("format_note", "").lower()
+
+        if not fmt_id or not filesize:
+            continue
+
+        info = {
+            "id": fmt_id,
+            "ext": ext,
+            "res": f"{width}x{height}" if width and height else format_note,
+            "height": height,
+            "width": width,
+            "filesize": filesize,
+            "size_str": readable_size(filesize),
+            "format_note": format_note
+        }
+
+        if vcodec != "none" and acodec != "none":
+            if is_reasonable(filesize, height):
+                allowed_video_audio.append(info)
+            else:
+                blocked_video_audio.append(info)
+        elif vcodec != "none":
+            resolution_key = f"{width}x{height}"
+            prev = video_only_all.get(resolution_key)
+            if not prev or filesize > prev["filesize"]:
+                video_only_all[resolution_key] = info
+        elif acodec != "none":
+            if "low" in format_note or "tiny" in format_note:
+                continue
+            audio_only_all.append(info)
+
+    allowed_video_audio.sort(key=lambda x: x["height"], reverse=True)
+    blocked_video_audio.sort(key=lambda x: x["height"], reverse=True)
+    video_only = list(video_only_all.values())
+    video_only.sort(key=lambda x: x["height"], reverse=True)
+    audio_only_all.sort(key=lambda x: x["filesize"], reverse=True)
+
+    def printer(title, lst, blocked=False):
+        status = " (Not downloadable)" if blocked else ""
+        print(f"\n {title}{status} ({len(lst)} formats):")
+        for f in lst:
+            print(f"[{f['id']}] {f['res']} - {f['ext']} - {f['size_str']}")
+
+    printer("Video + Audio (Allowed)", allowed_video_audio)
+    printer("Video + Audio (Blocked)", blocked_video_audio, blocked=True)
+    printer("Video Only", video_only)
+    printer("Audio Only", audio_only_all)
+
+    return [f["id"] for f in allowed_video_audio + video_only + audio_only_all]
+
+
+def downloader(link):
+    try:
+        with yt_dlp.YoutubeDL({'cookiefile': 'youtube_cookies.txt'}) as ydl_info:
+            vid_info = ydl_info.extract_info(link, download=False)
+    except Exception as e:
+        print(" Error during info extraction:", e)
+        return
+
+    fvalid_ids = sort_and_print_formats(vid_info.get("formats", []))
+
+    choice = input("\nEnter format ID(s) (comma-separated): ").strip()
+    selected_ids = [x.strip() for x in choice.split(',') if x.strip()]
+    invalid_ids = [x for x in selected_ids if x not in fvalid_ids]
+
+    if invalid_ids:
+        print(f" Invalid format IDs: {', '.join(invalid_ids)}")
+        return
+
+    for fmt in selected_ids:
+        print(f"\n Downloading format [{fmt}]...")
+        ydl_opts = {
+            'format': fmt,
+            'outtmpl': f'%(title)s_{fmt}.%(ext)s',
+            'merge_output_format': 'mp4',
+            'cookiefile': 'youtube_cookies.txt'
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([link])
+        except Exception as e:
+            print(f" Error downloading format {fmt}:", e)
+
+
+def download_yt_short(link):
+    try:
+        ydl_opts = {
+            'format': 'bestvideo+bestaudio/best',
+            'outtmpl': '%(title)s_short.%(ext)s',
+            'merge_output_format': 'mp4',
+            'noplaylist': True,
+            'cookiefile': 'youtube_cookies.txt'
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([link])
+        print(" Short downloaded successfully.")
+    except Exception as e:
+        print(" Failed to download Short:", e)
+
+
+def download_instagram_reel(link):
+    try:
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': '%(title)s_reel.%(ext)s',
+            'merge_output_format': 'mp4',
+            'cookiefile': 'instagram_cookies.txt'
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([link])
+        print(" Reel downloaded successfully.")
+    except Exception as e:
+        print(" Failed to download Reel:", e)
+
+
+def merge_video_audio():
+    video_file = input("Enter video file name (without .mp4): ").strip()
+    if not video_file.lower().endswith('.mp4'):
+        video_file += '.mp4'
+
+    audio_file = input("Enter audio file name (without .mp3): ").strip()
+    if not audio_file.lower().endswith('.mp3'):
+        audio_file += '.mp3'
+
+    output_file = input("Enter name for merged file (without extension): ").strip()
+    if not output_file.lower().endswith('.mp4'):
+        output_file += '.mp4'
+
+    try:
+        ffmpeg.input(video_file).output(
+            audio_file, output_file, vcodec='copy', acodec='aac', strict='experimental'
+        ).run(overwrite_output=True)
+        print(f" Merged file saved as: {output_file}")
+    except Exception as e:
+        print(f" Error during merging: {e}")
+
+
+class MediaDownloaderApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("FetchFlow")
+
+        try:
+            icon_path = resource_path("favicon.ico")
+            self.root.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+
+        self.primary = "#3b28cc"
+        self.secondary = "#6247aa"
+        self.bg = "#ffffff"
+        self.text_fg = "#000000"
+        self.accent = self.primary
+        self.error = "#ff4d6d"
+
+        self._configure_root()
+        self._init_vars()
+        self._setup_style()
+        self._build_ui()
+
+    def _configure_root(self):
+        self.root.configure(bg=self.bg)
+        self.root.minsize(800, 520)
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+    def _init_vars(self):
+        self.url_var = tk.StringVar()
+        self.type_var = tk.StringVar(value="both")
+        self.quality_var = tk.StringVar(value="Best available")
+        self.filename_var = tk.StringVar()
+        self.dir_var = tk.StringVar(value=os.getcwd())
+        self.size_var = tk.StringVar(value="Size: Unknown")
+
+
+    def _update_size(self):
+        url = self.url_var.get().strip()
+        if not hasattr(self, "last_info"):
+            return
+
+        size = self._estimate_size(self.last_info.get("formats", []),
+                                self.type_var.get(),
+                                self.quality_var.get())
+        self.size_var.set(f"Size: {size}")
+
+
+    def _setup_style(self):
+        style = ttk.Style()
+        try:
+            base_font = ("Zalando Sans SemiExpanded", 10)
+            tkfont.nametofont("TkDefaultFont").configure(family="Zalando Sans SemiExpanded", size=10)
+        except Exception:
+            base_font = ("Segoe UI", 10)
+        style.theme_use("clam")
+
+        style.configure("TFrame", background=self.bg)
+        style.configure("TLabel", background=self.bg, foreground=self.text_fg, font=base_font)
+        style.configure("TEntry", foreground=self.text_fg, insertcolor=self.text_fg)
+        style.configure("TCombobox")
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", self.bg)],
+                  foreground=[("readonly", self.text_fg)])
+        style.configure("Primary.TButton", background=self.primary, foreground=self.text_fg, padding=8)
+        style.map("Primary.TButton",
+                  background=[("active", self.secondary)])
+        style.configure("Accent.TLabel", background=self.bg, foreground=self.accent)
+        style.configure("Error.TLabel", background=self.bg, foreground=self.error)
+        style.configure("Horizontal.TProgressbar", troughcolor="#e9e9ef", background=self.accent)
+        try:
+            self.title_font = tkfont.Font(family="Delius", size=24, weight="bold")
+        except Exception:
+            self.title_font = tkfont.Font(family="Segoe UI", size=24, weight="bold")
+        try:
+            self.welcome_font = tkfont.Font(family="Delius", size=12)
+        except Exception:
+            self.welcome_font = tkfont.Font(family="Segoe UI", size=12)
+
+    def _build_ui(self):
+        outer = ttk.Frame(self.root, padding=12)
+        outer.grid(row=0, column=0, sticky="nsew")
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(outer, bg=self.bg, highlightthickness=0)
+        vbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        self.content = ttk.Frame(canvas, padding=16)
+        self.content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        win = canvas.create_window((0, 0), window=self.content, anchor="nw")
+        # Keep a reference to canvas for scrolling
+        self.canvas = canvas
+        # Ensure content resizes with canvas width
+        def _sync_content_width(event):
+            try:
+                canvas.itemconfigure(win, width=event.width)
+            except Exception:
+                pass
+        canvas.bind("<Configure>", _sync_content_width)
+        # Enable mouse wheel scrolling
+        self._enable_mousewheel(canvas)
+        canvas.configure(yscrollcommand=vbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vbar.grid(row=0, column=1, sticky="ns")
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(self.content)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        header.columnconfigure(0, weight=1)
+        title_lbl = ttk.Label(header, text="FetchFlow", foreground=self.primary)
+        title_lbl.configure(font=self.title_font)
+        title_lbl.grid(row=0, column=0, sticky="n", pady=(0, 4))
+        welcome_lbl = ttk.Label(header, text="Download videos and audio in a clean, modern UI")
+        welcome_lbl.configure(font=self.welcome_font)
+        welcome_lbl.grid(row=1, column=0, sticky="n")
+
+        url_card = ttk.Frame(self.content)
+        url_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        for i in range(3):
+            url_card.columnconfigure(i, weight=1 if i == 1 else 0)
+        ttk.Label(url_card, text="YouTube URL").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.url_entry = ttk.Entry(url_card, textvariable=self.url_var)
+        self.url_entry.grid(row=0, column=1, sticky="ew")
+        fetch_btn = ttk.Button(url_card, text="Fetch Details", style="Primary.TButton", command=self._fetch_details)
+        fetch_btn.grid(row=0, column=2, padx=(8, 0))
+
+        self.card_frame = ttk.Frame(self.content, padding=16)
+        self.card_frame.grid(row=2, column=0, sticky="ew")
+        self.card_frame.grid_remove()
+        self.card_frame.columnconfigure(0, weight=1)
+        self.title_var = tk.StringVar()
+        self.video_title_lbl = ttk.Label(self.card_frame, textvariable=self.title_var, font=("Segoe UI", 12, "bold"))
+        self.video_title_lbl.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.thumb_label = ttk.Label(self.card_frame)
+        self.thumb_label.grid(row=1, column=0, sticky="n", pady=(0, 8))
+        qrow = ttk.Frame(self.card_frame)
+        qrow.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        qrow.columnconfigure(1, weight=1)
+        ttk.Label(qrow, text="Quality").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.quality_cb = ttk.Combobox(qrow, textvariable=self.quality_var, state="readonly", values=["Best available", "Audio best"]) 
+        self.quality_cb.grid(row=0, column=1, sticky="ew")
+        # Type selection
+        trow = ttk.Frame(self.card_frame)
+        trow.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        trow.columnconfigure(1, weight=1)
+        ttk.Label(trow, text="Type").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.type_cb = ttk.Combobox(trow, textvariable=self.type_var, state="readonly", values=["both", "video", "audio"]) 
+        self.type_cb.grid(row=0, column=1, sticky="ew")
+        # Filename and folder selector
+        nrow = ttk.Frame(self.card_frame)
+        nrow.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        nrow.columnconfigure(1, weight=1)
+        ttk.Label(nrow, text="Filename").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.name_entry = ttk.Entry(nrow, textvariable=self.filename_var)
+        self.name_entry.grid(row=0, column=1, sticky="ew")
+        drow = ttk.Frame(self.card_frame)
+        drow.grid(row=5, column=0, sticky="ew", pady=(0, 8))
+        drow.columnconfigure(1, weight=1)
+        ttk.Label(drow, text="Folder").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.dir_entry = ttk.Entry(drow, textvariable=self.dir_var)
+        self.dir_entry.grid(row=0, column=1, sticky="ew")
+        browse_btn = ttk.Button(drow, text="Browse...", command=self._choose_directory)
+        browse_btn.grid(row=0, column=2, padx=(8, 0))
+        bottom = ttk.Frame(self.card_frame)
+        bottom.grid(row=6, column=0, sticky="ew")
+        self.size_label = ttk.Label(self.card_frame, textvariable=self.size_var, font=("Segoe UI", 10))
+        self.size_label.grid(row=7, column=0, sticky="w", pady=(4, 4))
+
+        bottom.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(bottom, orient="horizontal", mode="determinate")
+        self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        dl_btn = ttk.Button(bottom, text="Download", style="Primary.TButton", command=self._start_download)
+        dl_btn.grid(row=1, column=0, sticky="e")
+        self.type_cb.bind("<<ComboboxSelected>>", lambda e: self._update_size())
+        self.quality_cb.bind("<<ComboboxSelected>>", lambda e: self._update_size())
+
+        log_section = ttk.Frame(self.content)
+        log_section.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+        log_section.columnconfigure(0, weight=1)
+        self.log_widget = scrolledtext.ScrolledText(log_section, height=6, bg="#f5f5fb", fg=self.text_fg,
+                                                   insertbackground=self.text_fg, relief="flat", padx=8, pady=8)
+        self.log_widget.grid(row=0, column=0, sticky="nsew")
+        self._log("Ready.")
+
+    def _log(self, msg):
+        if hasattr(self, 'log_widget'):
+            self.log_widget.insert("end", f"{msg}\n")
+            self.log_widget.see("end")
+
+    def _enable_mousewheel(self, widget):
+        # Windows and MacOS
+        def _on_mousewheel(event):
+            delta = event.delta
+            if delta == 0:
+                return
+            step = -1 if delta > 0 else 1
+            try:
+                self.canvas.yview_scroll(step, "units")
+            except Exception:
+                pass
+        widget.bind_all("<MouseWheel>", _on_mousewheel)
+        # Linux (X11)
+        widget.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        widget.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
+
+    # No-op resize handler retained for future responsive hooks if needed
+    def _on_root_resize(self, event):
+        return
+
+    def _paste_from_clipboard(self):
+        try:
+            text = self.root.clipboard_get()
+            self.url_var.set(text)
+            self._log("Pasted URL from clipboard.")
+        except Exception:
+            self._log("No text in clipboard.")
+
+    def _choose_directory(self):
+        path = filedialog.askdirectory(initialdir=self.dir_var.get() or os.getcwd(), mustexist=True)
+        if path:
+            self.dir_var.set(path)
+            self._log(f"Directory set to: {path}")
+
+    def _fetch_details(self):
+        url = self.url_var.get().strip()
+        if not url:
+            self._log("Please enter a URL.")
+            return
+        self._log("Fetching details...")
+        def worker():
+            try:
+                with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    self.last_info = info
+            except Exception as e:
+                self.root.after(0, lambda: self._log(f"Error fetching: {e}"))
+                return
+            title = info.get("title") or "Untitled"
+            thumb_url = info.get("thumbnail")
+            formats = info.get("formats") or []
+            qualities = set()
+            for f in formats:
+                h = f.get("height")
+                vcodec = f.get("vcodec")
+                if h and vcodec and vcodec != "none":
+                    qualities.add(f"{h}p")
+            qvals = sorted({q for q in qualities if q.endswith('p')}, key=lambda x: int(x[:-1]), reverse=True)
+            qvals = ["Best available"] + qvals + ["Audio best"]
+            img_data = None
+            if thumb_url:
+                try:
+                    with urllib.request.urlopen(thumb_url) as r:
+                        img_data = r.read()
+                except Exception:
+                    img_data = None
+            def ui_update():
+                self.title_var.set(title)
+                safe_name = ''.join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
+                size = self._estimate_size(info.get("formats", []), self.type_var.get(), self.quality_var.get())
+                self.filename_var.set(safe_name)
+                self.quality_cb.configure(values=qvals)
+                self.quality_var.set(qvals[0] if qvals else "Best available")
+                self.size_var.set(f"Size: {size}")
+
+                if PIL_AVAILABLE and img_data:
+                    try:
+                        img = Image.open(io.BytesIO(img_data))
+                        w, h = img.size
+                        max_w = 480
+                        if w > max_w:
+                            ratio = max_w / float(w)
+                            img = img.resize((int(w*ratio), int(h*ratio)), Image.LANCZOS)
+                        self._thumb_photo = ImageTk.PhotoImage(img)
+                        self.thumb_label.configure(image=self._thumb_photo)
+                    except Exception:
+                        self.thumb_label.configure(text="Thumbnail unavailable")
+                else:
+                    self.thumb_label.configure(text="Thumbnail unavailable")
+                self.card_frame.grid()
+                self._log("Details loaded.")
+            self.root.after(0, ui_update)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _start_download(self):
+        url = self.url_var.get().strip()
+        if not url:
+            self._log("Please enter a URL.")
+            return
+        dtype = self.type_var.get()
+        quality = self.quality_var.get()
+        fname = self.filename_var.get().strip()
+        outdir = self.dir_var.get().strip()
+        self._log(f"Requested: type={dtype}, quality={quality}, filename={fname or '(auto)'}")
+        self._log(f"Saving to: {outdir}")
+        self.progress.configure(mode="determinate", value=0, maximum=100)
+        t = threading.Thread(target=self._download_worker, args=(url, dtype, quality, fname, outdir), daemon=True)
+        t.start()
+
+    def _set_progress(self, value):
+        try:
+            self.progress.configure(mode="determinate")
+            self.progress['value'] = max(0, min(100, value))
+        except Exception:
+            pass
+
+    def _download_worker(self, url, dtype, quality, fname, outdir):
+        fmt = self._format_string(dtype, quality)
+        if not os.path.isdir(outdir):
+            try:
+                os.makedirs(outdir, exist_ok=True)
+            except Exception:
+                pass
+        if fname:
+            outtmpl = os.path.join(outdir, f"{fname}.%(ext)s")
+        else:
+            outtmpl = os.path.join(outdir, '%(title)s.%(ext)s')
+
+        ydl_opts = {
+            'format': fmt,
+            'outtmpl': outtmpl,
+            'merge_output_format': 'mp4',
+            'progress_hooks': [self._yt_progress_hook],
+            'noplaylist': True,
+            'ffmpeg_location': FFMPEG_LOCATION
+        }
+
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+        except Exception as e:
+            self.root.after(0, lambda: self._log(f"Error: {e}"))
+            self.root.after(0, lambda: self._set_progress(0))
+
+    def _format_string(self, dtype, quality):
+        qmap = {
+            '1080p': 1080,
+            '720p': 720,
+            '480p': 480,
+            '360p': 360
+        }
+        # Audio only
+        if dtype == 'audio' or quality == 'Audio best':
+            return 'bestaudio/best'
+        # Video only
+        if dtype == 'video':
+            if quality == 'Best available':
+                return 'bestvideo[ext=mp4]/bestvideo'
+            if quality in qmap:
+                h = qmap[quality]
+                return f"bestvideo[height<={h}][ext=mp4]/bestvideo[height<={h}]"
+            return 'bestvideo'
+        # Merged (video+audio)
+        if quality == 'Best available':
+            return 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+        if quality in qmap:
+            h = qmap[quality]
+            return f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/best[height<={h}][ext=mp4]/best"
+        return 'best'
+    def _estimate_size(self, formats, dtype, quality):
+        best_match = None
+        target_h = None
+
+        if quality.endswith("p"):
+            try:
+                target_h = int(quality[:-1])
+            except:
+                target_h = None
+
+        for f in formats:
+            filesize = f.get("filesize") or f.get("filesize_approx")
+            if not filesize:
+                continue
+
+            v = f.get("vcodec")
+            a = f.get("acodec")
+            h = f.get("height")
+
+            # Audio only
+            if dtype == "audio":
+                if a != "none":
+                    return readable_size(filesize)
+
+            # Video only
+            if dtype == "video":
+                if v != "none" and a == "none":
+                    if not target_h or (h and h <= target_h):
+                        best_match = filesize
+
+            # Both (video+audio)
+            if dtype == "both":
+                if v != "none" and a != "none":
+                    if not target_h or (h and h <= target_h):
+                        best_match = filesize
+
+        return readable_size(best_match) if best_match else "Unknown"
+
+    def _yt_progress_hook(self, d):
+        status = d.get('status')
+        if status == 'downloading':
+            downloaded = d.get('downloaded_bytes') or 0
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+            if total:
+                pct = downloaded * 100.0 / total
+                self.root.after(0, lambda v=pct: self._set_progress(v))
+            spd = d.get('speed')
+            eta = d.get('eta')
+            msg = []
+            if total:
+                msg.append(f"{pct:.1f}%")
+            if spd:
+                msg.append(f"{spd/1024/1024:.2f} MB/s")
+            if eta:
+                msg.append(f"ETA {int(eta)}s")
+            if msg:
+                self.root.after(0, lambda t=' | '.join(msg): self._log(t))
+        elif status == 'finished':
+            self.root.after(0, lambda: self._set_progress(100))
+            self.root.after(0, lambda: self._log('Download finished, post-processing...'))
+        elif status == 'error':
+            self.root.after(0, lambda: self._log('Error during download'))
+
+    def run(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MediaDownloaderApp(root)
+    app.run()
