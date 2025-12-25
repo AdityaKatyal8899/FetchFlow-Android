@@ -14,7 +14,7 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "jobs")
 MERGED_DIR = os.path.join(BASE_DIR, "merged")
-COOKIES_FILE = os.path.join(BASE_DIR, "cookies.txt")
+COOKIES_FILE = "/etc/secrets/cookies.txt"       #This is the path of cookies as secret files in render
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(MERGED_DIR, exist_ok=True)
