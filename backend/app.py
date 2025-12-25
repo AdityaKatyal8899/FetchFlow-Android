@@ -27,46 +27,12 @@ jobs = {}
 YTDLP_BASE_OPTS = {
     "quiet": True,
     "cookiefile": COOKIES_FILE,
+    "nocheckcertificate": True,
 }
-
 
 def safe_filename(name: str):
     name = re.sub(r'[\\/*?:"<>|]', "", name)
     return name.strip()
-
-
-def is_reasonable(filesize, height):
-    if not filesize or not height:
-        return False
-
-    expected_min = {
-        144: 0.5, 240: 1, 360: 2, 480: 3,
-        720: 5, 1080: 8, 1440: 12, 2160: 20
-    }
-
-    for res in sorted(expected_min.keys(), reverse=True):
-        if height >= res:
-            return filesize >= expected_min[res] * 1024 * 1024
-
-    return filesize >= 2 * 1024 * 1024
-
-
-def merge_video_audio(video_path, audio_path, output_path):
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-i", video_path,
-            "-i", audio_path,
-            "-c:v", "copy",
-            "-c:a", "aac",
-            output_path
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=True
-    )
-
 
 @app.route("/extract", methods=["POST"])
 def extract_info():
@@ -85,8 +51,6 @@ def extract_info():
         "uploader": info.get("uploader"),
         "formats": [
             {
-                "format_id": f.get("format_id"),
-                "ext": f.get("ext"),
                 "height": f.get("height"),
                 "filesize": f.get("filesize") or f.get("filesize_approx"),
                 "has_video": f.get("vcodec") != "none",
@@ -95,7 +59,6 @@ def extract_info():
             for f in info.get("formats", [])
         ]
     })
-
 
 @app.route("/download", methods=["POST"])
 def download_media():
@@ -125,42 +88,14 @@ def download_media():
                 info = ydl.extract_info(url, download=False)
 
             title = safe_filename(info.get("title", job_id))
-            formats = info.get("formats", [])
 
-            video_fmt = None
-            audio_fmt = None
-
-            if dtype in ("video", "both"):
-                candidates = [
-                    f for f in formats
-                    if f.get("vcodec") != "none"
-                    and f.get("height")
-                    and f["height"] <= quality
-                    and is_reasonable(
-                        f.get("filesize") or f.get("filesize_approx"),
-                        f.get("height")
-                    )
-                ]
-                video_fmt = max(candidates, key=lambda f: f["height"], default=None)
-
-            if dtype in ("audio", "both"):
-                audio_candidates = [
-                    f for f in formats
-                    if f.get("acodec") != "none"
-                    and f.get("vcodec") == "none"
-                ]
-                audio_fmt = max(
-                    audio_candidates,
-                    key=lambda f: f.get("filesize") or 0,
-                    default=None
-                )
-
+            # -------- AUDIO ONLY (MP3) --------
             if dtype == "audio":
                 out_path = os.path.join(MERGED_DIR, f"{title}.mp3")
 
                 yt_dlp.YoutubeDL({
                     **YTDLP_BASE_OPTS,
-                    "format": audio_fmt["format_id"],
+                    "format": "bestaudio/best",
                     "outtmpl": os.path.join(job_dir, "audio.%(ext)s"),
                     "writethumbnail": True,
                     "postprocessors": [
@@ -187,49 +122,30 @@ def download_media():
                 os.rename(audio_file, out_path)
                 filename = os.path.basename(out_path)
 
+            # -------- VIDEO ONLY --------
             elif dtype == "video":
                 out_path = os.path.join(MERGED_DIR, f"{title}.mp4")
 
                 yt_dlp.YoutubeDL({
                     **YTDLP_BASE_OPTS,
-                    "format": video_fmt["format_id"],
+                    "format": f"bestvideo[height<={quality}]/bestvideo",
                     "outtmpl": out_path,
                 }).download([url])
 
                 filename = os.path.basename(out_path)
 
+            # -------- VIDEO + AUDIO (MERGED BY YT-DLP) --------
             else:
-                video_path = os.path.join(job_dir, "video.%(ext)s")
-                audio_path = os.path.join(job_dir, "audio.%(ext)s")
+                out_path = os.path.join(MERGED_DIR, f"{title}.mp4")
 
                 yt_dlp.YoutubeDL({
                     **YTDLP_BASE_OPTS,
-                    "format": video_fmt["format_id"],
-                    "outtmpl": video_path,
+                    "format": f"bestvideo[height<={quality}]+bestaudio/best",
+                    "outtmpl": out_path,
+                    "merge_output_format": "mp4",
                 }).download([url])
 
-                yt_dlp.YoutubeDL({
-                    **YTDLP_BASE_OPTS,
-                    "format": audio_fmt["format_id"],
-                    "outtmpl": audio_path,
-                }).download([url])
-
-                video_real = next(
-                    os.path.join(job_dir, f)
-                    for f in os.listdir(job_dir)
-                    if f.startswith("video.")
-                )
-
-                audio_real = next(
-                    os.path.join(job_dir, f)
-                    for f in os.listdir(job_dir)
-                    if f.startswith("audio.")
-                )
-
-                final_path = os.path.join(MERGED_DIR, f"{title}.mp4")
-                merge_video_audio(video_real, audio_real, final_path)
-
-                filename = os.path.basename(final_path)
+                filename = os.path.basename(out_path)
 
             filepath = os.path.join(MERGED_DIR, filename)
 
@@ -245,7 +161,6 @@ def download_media():
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"status": "ok", "job_id": job_id})
 
-
 @app.route("/job/<job_id>")
 def job_status(job_id):
     job = jobs.get(job_id)
@@ -253,14 +168,12 @@ def job_status(job_id):
         return jsonify({"status": "error"}), 404
     return jsonify(job)
 
-
 @app.route("/files/<filename>")
 def serve_file(filename):
     for job in jobs.values():
         if job["status"] == "done" and job["filename"] == filename:
             return send_from_directory(MERGED_DIR, filename, as_attachment=True)
     return jsonify({"status": "expired"}), 404
-
 
 def cleanup_worker():
     while True:
@@ -281,11 +194,9 @@ def cleanup_worker():
                 jobs.pop(job_id)
         time.sleep(CLEANUP_INTERVAL)
 
-
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "uptime": time.time()})
-
 
 if __name__ == "__main__":
     threading.Thread(target=cleanup_worker, daemon=True).start()
