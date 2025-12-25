@@ -14,6 +14,7 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "jobs")
 MERGED_DIR = os.path.join(BASE_DIR, "merged")
+COOKIES_FILE = os.path.join(BASE_DIR, "cookies.txt")
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(MERGED_DIR, exist_ok=True)
@@ -22,6 +23,11 @@ FILE_TTL = 180
 CLEANUP_INTERVAL = 60
 
 jobs = {}
+
+YTDLP_BASE_OPTS = {
+    "quiet": True,
+    "cookiefile": COOKIES_FILE,
+}
 
 
 def safe_filename(name: str):
@@ -68,7 +74,7 @@ def extract_info():
     if not url:
         return jsonify({"status": "error"}), 400
 
-    with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+    with yt_dlp.YoutubeDL({**YTDLP_BASE_OPTS, "skip_download": True}) as ydl:
         info = ydl.extract_info(url, download=False)
 
     return jsonify({
@@ -115,7 +121,7 @@ def download_media():
 
     def worker():
         try:
-            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            with yt_dlp.YoutubeDL(YTDLP_BASE_OPTS) as ydl:
                 info = ydl.extract_info(url, download=False)
 
             title = safe_filename(info.get("title", job_id))
@@ -143,50 +149,51 @@ def download_media():
                     if f.get("acodec") != "none"
                     and f.get("vcodec") == "none"
                 ]
-                audio_fmt = max(audio_candidates, key=lambda f: f.get("filesize") or 0, default=None)
-                if dtype == "audio":
-                    out_path = os.path.join(MERGED_DIR, f"{title}.mp3")
+                audio_fmt = max(
+                    audio_candidates,
+                    key=lambda f: f.get("filesize") or 0,
+                    default=None
+                )
 
-                    yt_dlp.YoutubeDL({
-                        "format": audio_fmt["format_id"],
-                        "outtmpl": os.path.join(job_dir, "audio.%(ext)s"),
-                        "quiet": True,
-                        "writethumbnail": True,
-                        "postprocessors": [
-                            {
-                                "key": "FFmpegExtractAudio",
-                                "preferredcodec": "mp3",
-                                "preferredquality": "192",
-                            },
-                            {
-                                "key": "FFmpegThumbnailsConvertor",
-                                "format": "jpg",
-                            },
-                            {
-                                "key": "EmbedThumbnail"
-                            },
-                            {
-                                "key": "FFmpegMetadata"
-                            },
-                        ],
-                    }).download([url])
+            if dtype == "audio":
+                out_path = os.path.join(MERGED_DIR, f"{title}.mp3")
 
-                    # Locate the resulting mp3 file
-                    audio_files = [f for f in os.listdir(job_dir) if f.endswith(".mp3")]
-                    if not audio_files:
-                        raise Exception("Audio conversion failed")
-                    
-                    audio_real = os.path.join(job_dir, audio_files[0])
-                    os.rename(audio_real, out_path)
-                    filename = os.path.basename(out_path)
+                yt_dlp.YoutubeDL({
+                    **YTDLP_BASE_OPTS,
+                    "format": audio_fmt["format_id"],
+                    "outtmpl": os.path.join(job_dir, "audio.%(ext)s"),
+                    "writethumbnail": True,
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": "192",
+                        },
+                        {
+                            "key": "FFmpegThumbnailsConvertor",
+                            "format": "jpg",
+                        },
+                        {"key": "EmbedThumbnail"},
+                        {"key": "FFmpegMetadata"},
+                    ],
+                }).download([url])
+
+                audio_file = next(
+                    os.path.join(job_dir, f)
+                    for f in os.listdir(job_dir)
+                    if f.endswith(".mp3")
+                )
+
+                os.rename(audio_file, out_path)
+                filename = os.path.basename(out_path)
 
             elif dtype == "video":
                 out_path = os.path.join(MERGED_DIR, f"{title}.mp4")
 
                 yt_dlp.YoutubeDL({
+                    **YTDLP_BASE_OPTS,
                     "format": video_fmt["format_id"],
                     "outtmpl": out_path,
-                    "quiet": True,
                 }).download([url])
 
                 filename = os.path.basename(out_path)
@@ -196,19 +203,28 @@ def download_media():
                 audio_path = os.path.join(job_dir, "audio.%(ext)s")
 
                 yt_dlp.YoutubeDL({
+                    **YTDLP_BASE_OPTS,
                     "format": video_fmt["format_id"],
                     "outtmpl": video_path,
-                    "quiet": True,
                 }).download([url])
 
                 yt_dlp.YoutubeDL({
+                    **YTDLP_BASE_OPTS,
                     "format": audio_fmt["format_id"],
                     "outtmpl": audio_path,
-                    "quiet": True,
                 }).download([url])
 
-                video_real = next(os.path.join(job_dir, f) for f in os.listdir(job_dir) if f.startswith("video."))
-                audio_real = next(os.path.join(job_dir, f) for f in os.listdir(job_dir) if f.startswith("audio."))
+                video_real = next(
+                    os.path.join(job_dir, f)
+                    for f in os.listdir(job_dir)
+                    if f.startswith("video.")
+                )
+
+                audio_real = next(
+                    os.path.join(job_dir, f)
+                    for f in os.listdir(job_dir)
+                    if f.startswith("audio.")
+                )
 
                 final_path = os.path.join(MERGED_DIR, f"{title}.mp4")
                 merge_video_audio(video_real, audio_real, final_path)
@@ -227,7 +243,6 @@ def download_media():
             jobs[job_id]["error"] = str(e)
 
     threading.Thread(target=worker, daemon=True).start()
-
     return jsonify({"status": "ok", "job_id": job_id})
 
 
@@ -252,23 +267,24 @@ def cleanup_worker():
         now = time.time()
         for job_id, job in list(jobs.items()):
             if job.get("created_at") and now - job["created_at"] > FILE_TTL:
-                path = os.path.join(MERGED_DIR, job["filename"])
-                if os.path.exists(path):
-                    os.remove(path)
+                if job["filename"]:
+                    path = os.path.join(MERGED_DIR, job["filename"])
+                    if os.path.exists(path):
+                        os.remove(path)
+
                 temp_path = os.path.join(TEMP_DIR, job_id)
                 if os.path.exists(temp_path):
                     for f in os.listdir(temp_path):
                         os.remove(os.path.join(temp_path, f))
                     os.rmdir(temp_path)
+
                 jobs.pop(job_id)
         time.sleep(CLEANUP_INTERVAL)
 
-@app.route('/health', methods=['GET'])
+
+@app.route("/health", methods=["GET"])
 def health_check():
-    return jsonify({
-        'status': 'ok',
-        'upTime': time.time()
-    })
+    return jsonify({"status": "ok", "uptime": time.time()})
 
 
 if __name__ == "__main__":
