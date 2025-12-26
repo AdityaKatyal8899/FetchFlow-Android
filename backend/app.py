@@ -6,7 +6,7 @@ import threading
 import uuid
 import time
 import subprocess
-import re
+import re, requests
 
 app = Flask(__name__)
 CORS(app)
@@ -15,6 +15,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "jobs")
 MERGED_DIR = os.path.join(BASE_DIR, "merged")
 COOKIES_FILE = os.path.join(BASE_DIR, "cookies.txt")
+ANDROID_KEYWORD = 'android'
+GITHUB_REPO = '"FetchFlow-Android'
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(MERGED_DIR, exist_ok=True)
@@ -161,12 +163,14 @@ def download_media():
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"status": "ok", "job_id": job_id})
 
+
 @app.route("/job/<job_id>")
 def job_status(job_id):
     job = jobs.get(job_id)
     if not job:
         return jsonify({"status": "error"}), 404
     return jsonify(job)
+
 
 @app.route("/files/<filename>")
 def serve_file(filename):
@@ -197,6 +201,70 @@ def cleanup_worker():
 @app.route("/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "uptime": time.time()})
+
+@app.route("/check-update", methods=["GET"])
+def check_update():
+    current_version = request.args.get("version")
+
+    if not current_version:
+        return jsonify({
+            "update": False,
+            "error": "Current version not provided"
+        }), 400
+
+    try:
+        res = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases",
+            timeout=10
+        )
+
+        if res.status_code != 200:
+            return jsonify({
+                "update": False,
+                "error": "Failed to fetch releases"
+            })
+
+        releases = res.json()
+
+        latest_release = None
+        apk_asset = None
+
+        for release in releases:
+            for asset in release.get("assets", []):
+                if ANDROID_KEYWORD in asset["name"].lower() and asset["name"].endswith(".apk"):
+                    latest_release = release
+                    apk_asset = asset
+                    break
+            if latest_release:
+                break
+
+        if not latest_release or not apk_asset:
+            return jsonify({
+                "update": False,
+                "message": "No Android release found"
+            })
+
+        latest_version = latest_release["tag_name"].lstrip("v")
+
+        if latest_version == current_version:
+            return jsonify({
+                "update": False,
+                "version": current_version
+            })
+
+        return jsonify({
+            "update": True,
+            "version": latest_version,
+            "changelog": latest_release.get("body", ""),
+            "download_url": apk_asset["browser_download_url"]
+        })
+
+    except Exception as e:
+        return jsonify({
+            "update": False,
+            "error": str(e)
+        })
+
 
 if __name__ == "__main__":
     threading.Thread(target=cleanup_worker, daemon=True).start()
