@@ -14,7 +14,10 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "jobs")
 MERGED_DIR = os.path.join(BASE_DIR, "merged")
-COOKIES_FILE = os.path.join(BASE_DIR, "cookies.txt")
+
+YT_COOKIES = os.path.join(BASE_DIR, "cookies.txt")
+IG_COOKIES = os.path.join(BASE_DIR, "instagram_cookies.txt")
+
 ANDROID_KEYWORD = 'android'
 GITHUB_REPO = '"FetchFlow-Android'
 
@@ -28,7 +31,7 @@ jobs = {}
 
 YTDLP_BASE_OPTS = {
     "quiet": True,
-    "cookiefile": COOKIES_FILE,
+    "cookiefile":  YT_COOKIES,
     "nocheckcertificate": True,
 }
 
@@ -62,6 +65,16 @@ def extract_info():
         ]
     })
 
+
+def detect_platform(url: str):
+    url = url.lower()
+    if "youtube.com/shorts" in url or "youtu.be/" in url:
+        return "yt_short"
+    if "instagram.com/reel" in url:
+        return "ig_reel"
+    return "youtube"
+
+
 @app.route("/download", methods=["POST"])
 def download_media():
     data = request.json
@@ -72,6 +85,7 @@ def download_media():
     if not url:
         return jsonify({"status": "error"}), 400
 
+    platform = detect_platform(url)
     job_id = str(uuid.uuid4())
     job_dir = os.path.join(TEMP_DIR, job_id)
     os.makedirs(job_dir, exist_ok=True)
@@ -90,9 +104,29 @@ def download_media():
                 info = ydl.extract_info(url, download=False)
 
             title = safe_filename(info.get("title", job_id))
+            if platform in ("yt_short", "ig_reel"):
+                            
+                if platform == 'yt-shorts':
+                    cookie_file = YT_COOKIES
 
-            # -------- AUDIO ONLY (MP3) --------
-            if dtype == "audio":
+                else:
+                    cookie_file = IG_COOKIES
+                out_path = os.path.join(MERGED_DIR, f"{title}.mp4")
+
+                yt_dlp.YoutubeDL({
+                    'quiet': True,
+                    "cookiefile":  cookie_file,
+                    "nocheckcertificate": True,
+                    "format": "bestvideo+bestaudio/best",
+                    "outtmpl": out_path,
+                    "merge_output_format": "mp4",
+                    "noplaylist": True,
+                }).download([url])
+
+                filename = os.path.basename(out_path)
+
+            # AUDIO ONLY (MP3)
+            elif dtype == "audio":
                 out_path = os.path.join(MERGED_DIR, f"{title}.mp3")
 
                 yt_dlp.YoutubeDL({
@@ -124,7 +158,7 @@ def download_media():
                 os.rename(audio_file, out_path)
                 filename = os.path.basename(out_path)
 
-            # -------- VIDEO ONLY --------
+            # VIDEO ONLY
             elif dtype == "video":
                 out_path = os.path.join(MERGED_DIR, f"{title}.mp4")
 
@@ -136,7 +170,7 @@ def download_media():
 
                 filename = os.path.basename(out_path)
 
-            # -------- VIDEO + AUDIO (MERGED BY YT-DLP) --------
+            # VIDEO + AUDIO (normal YouTube)
             else:
                 out_path = os.path.join(MERGED_DIR, f"{title}.mp4")
 
