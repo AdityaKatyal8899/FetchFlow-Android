@@ -7,6 +7,7 @@ import uuid
 import time
 import subprocess
 import re, requests
+from packaging.version import Version
 
 app = Flask(__name__)
 CORS(app)
@@ -19,7 +20,7 @@ YT_COOKIES = os.path.join(BASE_DIR, "cookies.txt")
 IG_COOKIES = os.path.join(BASE_DIR, "instagram_cookies.txt")
 
 ANDROID_KEYWORD = 'android'
-GITHUB_REPO = '"FetchFlow-Android'
+GITHUB_REPO = 'AdityaKatyal8899/FetchFlow-Android'
 
 os.makedirs(TEMP_DIR, exist_ok=True)
 os.makedirs(MERGED_DIR, exist_ok=True)
@@ -241,56 +242,61 @@ def check_update():
     current_version = request.args.get("version")
 
     if not current_version:
-        return jsonify({
-            "update": False,
-            "error": "Current version not provided"
-        }), 400
+        return jsonify({"update": False, "error": "version missing"}), 400
 
     try:
+        headers = {
+            "User-Agent": "FetchFlow-Android-Updater"
+        }
+
         res = requests.get(
             f"https://api.github.com/repos/{GITHUB_REPO}/releases",
+            headers=headers,
             timeout=10
         )
 
         if res.status_code != 200:
             return jsonify({
                 "update": False,
-                "error": "Failed to fetch releases"
+                "error": f"GitHub API error {res.status_code}"
             })
 
         releases = res.json()
 
-        latest_release = None
-        apk_asset = None
+        latest = None
 
-        for release in releases:
-            for asset in release.get("assets", []):
-                if ANDROID_KEYWORD in asset["name"].lower() and asset["name"].endswith(".apk"):
-                    latest_release = release
-                    apk_asset = asset
-                    break
-            if latest_release:
-                break
+        for r in releases:
+            tag = r.get("tag_name", "").lstrip("v")
+            if not tag:
+                continue
 
-        if not latest_release or not apk_asset:
+            apk = next(
+                (a for a in r.get("assets", []) if a["name"].endswith(".apk")),
+                None
+            )
+
+            if not apk:
+                continue
+
+            if not latest or Version(tag) > Version(latest["version"]):
+                latest = {
+                    "version": tag,
+                    "download_url": apk["browser_download_url"],
+                    "changelog": r.get("body", "")
+                }
+
+        if not latest:
+            return jsonify({"update": False})
+
+        if Version(latest["version"]) > Version(current_version):
             return jsonify({
-                "update": False,
-                "message": "No Android release found"
-            })
-
-        latest_version = latest_release["tag_name"].lstrip("v")
-
-        if latest_version == current_version:
-            return jsonify({
-                "update": False,
-                "version": current_version
+                "update": True,
+                **latest
             })
 
         return jsonify({
-            "update": True,
-            "version": latest_version,
-            "changelog": latest_release.get("body", ""),
-            "download_url": apk_asset["browser_download_url"]
+            "update": False,
+            "version": current_version
         })
 
     except Exception as e:
@@ -298,7 +304,6 @@ def check_update():
             "update": False,
             "error": str(e)
         })
-
 
 if __name__ == "__main__":
     threading.Thread(target=cleanup_worker, daemon=True).start()
