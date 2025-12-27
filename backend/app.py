@@ -36,7 +36,7 @@ EXTRACT_OPTS = {
     "skip_download": True,
     "nocheckcertificate": True,
     "ignoreerrors": True,   # prevents API crash
-    "js_runtimes": ["node"],
+    "js_runtimes": ["deno"],
 }
 
 
