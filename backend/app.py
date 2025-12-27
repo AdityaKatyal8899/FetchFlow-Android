@@ -16,7 +16,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMP_DIR = os.path.join(BASE_DIR, "jobs")
 MERGED_DIR = os.path.join(BASE_DIR, "merged")
 
-YT_COOKIES = os.path.join(BASE_DIR, "cookies.txt")
+YT_COOKIES = os.path.join(BASE_DIR, "youtube_cookies.txt")
 IG_COOKIES = os.path.join(BASE_DIR, "instagram_cookies.txt")
 
 ANDROID_KEYWORD = 'android'
@@ -69,11 +69,12 @@ def extract_info():
 
 def detect_platform(url: str):
     url = url.lower()
-    if "youtube.com/shorts" in url or "youtu.be/" in url:
-        return "yt_short"
     if "instagram.com/reel" in url:
-        return "ig_reel"
-    return "youtube"
+        return "instagram"
+    if "youtube.com" in url or "youtu.be" in url:
+        return "youtube"
+    return "unknown"
+
 
 
 @app.route("/download", methods=["POST"])
@@ -107,11 +108,12 @@ def download_media():
             title = safe_filename(info.get("title", job_id))
             if platform in ("yt_short", "ig_reel"):
                             
-                if platform == 'yt-shorts':
+                if platform == 'yt-short':
                     cookie_file = YT_COOKIES
 
                 else:
                     cookie_file = IG_COOKIES
+
                 out_path = os.path.join(MERGED_DIR, f"{title}.mp4")
 
                 yt_dlp.YoutubeDL({
