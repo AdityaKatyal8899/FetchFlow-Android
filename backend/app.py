@@ -70,7 +70,7 @@ def extract_info():
 def detect_platform(url: str):
     url = url.lower()
     if "instagram.com/reel" in url:
-        return "instagram"
+        return "ig_reel"
     if "youtube.com" in url or "youtu.be" in url:
         return "youtube"
     return "unknown"
@@ -106,13 +106,16 @@ def download_media():
                 info = ydl.extract_info(url, download=False)
 
             title = safe_filename(info.get("title", job_id))
-            if platform in ("yt_short", "ig_reel"):
+            if platform in ("youtube", "ig_reel"):
                             
-                if platform == 'yt-short':
+                if platform == 'youtube':
                     cookie_file = YT_COOKIES
 
-                else:
+                elif platform == "ig_reel":
                     cookie_file = IG_COOKIES
+
+                else:
+                    raise Exception('Unsupported Format')
 
                 out_path = os.path.join(MERGED_DIR, f"{title}.mp4")
 
