@@ -30,6 +30,15 @@ CLEANUP_INTERVAL = 60
 
 jobs = {}
 
+
+EXTRACT_OPTS = {
+    "quiet": True,
+    "skip_download": True,
+    "nocheckcertificate": True,
+    "ignoreerrors": True,   # prevents API crash
+}
+
+
 YTDLP_BASE_OPTS = {
     "quiet": True,
     "cookiefile":  YT_COOKIES,
@@ -46,8 +55,11 @@ def extract_info():
     if not url:
         return jsonify({"status": "error"}), 400
 
-    with yt_dlp.YoutubeDL({**YTDLP_BASE_OPTS, "skip_download": True}) as ydl:
+    with yt_dlp.YoutubeDL(EXTRACT_OPTS) as ydl:
         info = ydl.extract_info(url, download=False)
+
+    if not info:
+        return jsonify({"status": "error", "message": "Unable to extract metadata"}), 400
 
     return jsonify({
         "status": "ok",
@@ -62,9 +74,10 @@ def extract_info():
                 "has_video": f.get("vcodec") != "none",
                 "has_audio": f.get("acodec") != "none",
             }
-            for f in info.get("formats", [])
+            for f in info.get("formats") or []
         ]
     })
+
 
 
 def detect_platform(url: str):
