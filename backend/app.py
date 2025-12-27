@@ -36,7 +36,7 @@ EXTRACT_OPTS = {
     "skip_download": True,
     "nocheckcertificate": True,
     "ignoreerrors": True,   # prevents API crash
-    "js_runtimes": ["deno"],
+   
 }
 
 
@@ -44,7 +44,7 @@ YTDLP_BASE_OPTS = {
     "quiet": True,
     "cookiefile":  YT_COOKIES,
     "nocheckcertificate": True,
-    "js_runtimes": ["deno"],
+   
 
 }
 
