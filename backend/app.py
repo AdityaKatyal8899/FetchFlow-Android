@@ -44,7 +44,7 @@ YTDLP_BASE_OPTS = {
     "quiet": True,
     "cookiefile":  YT_COOKIES,
     "nocheckcertificate": True,
-    "js_runtimes": ["node"],
+    "js_runtimes": ["deno"],
 
 }
 
