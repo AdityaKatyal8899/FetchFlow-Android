@@ -36,6 +36,7 @@ EXTRACT_OPTS = {
     "skip_download": True,
     "nocheckcertificate": True,
     "ignoreerrors": True,   # prevents API crash
+    "js_runtimes": ["node"],
 }
 
 
@@ -43,6 +44,8 @@ YTDLP_BASE_OPTS = {
     "quiet": True,
     "cookiefile":  YT_COOKIES,
     "nocheckcertificate": True,
+    "js_runtimes": ["node"],
+
 }
 
 def safe_filename(name: str):
